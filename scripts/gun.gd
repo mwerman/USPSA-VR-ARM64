@@ -209,16 +209,16 @@ func _process(delta: float) -> void:
 		dot_mat.albedo_color = Color(ret_color.r, ret_color.g, ret_color.b, clampf(ret_bright, 0.1, 1.0))
 	var vis := false
 	if enabled and is_visible_in_tree() and head.is_inside_world():
-		# Improved red dot visibility calculation using camera-like projection
-		# Project eye position from optic's viewpoint toward the scene
-		var e := optic.to_local(head.global_position)
-		# Ensure eye is in front of optic (z should be negative in local space if looking out)
-		if e.z < -win_z + 0.02:
-			# Project eye position onto far clipping plane to determine if within reticle
-			var k := absf((e.z - win_z) / (e.z + 50.0))
-			var p := e + Vector3(0, 0, 50.0) * k
-			# Check if projected point is within reticle bounds
-			vis = absf(p.x) < win.x * 1.5 and absf(p.y) < win.y * 1.5
+		# Check if optic is visible and eye position is roughly aligned with gun barrel
+		# Simple approach: check if we're looking in the direction the gun is pointing
+		# The optic reticle should be visible when aiming at typical target distances (10-50m)
+		var head_pos := head.global_position
+		var dir_to_head := (head_pos - optic.global_position).normalized()
+		var gun_dir := -optic.global_basis.z  # Gun points in -Z direction locally
+		var angle_between := dir_to_head.angle(gun_dir)
+		# Reticle visible when aiming within reasonable cone and at typical distances
+		if angle_between < 1.5 and head_pos.distance_to(optic.global_position) > 2.0:  # ~86 degrees, minimum 2m distance
+			vis = true
 	dot.visible = vis
 	if ring != null:
 		ring.visible = vis and ret_style == 1
@@ -328,9 +328,9 @@ func can_grab_slide(p: Vector3) -> bool:
 	if not enabled or slide_grabbed or not is_visible_in_tree():
 		return false
 	var s: Vector3 = cfg["slide"]
-	# Increased rack area for easier hand model interaction
+	# Increased rack area for easier hand model interaction - larger hitbox
 	var grip_point := slide_node.to_global(Vector3(0.0, 0.015, s.z * 0.4))
-	return p.distance_to(grip_point) < 0.12
+	return p.distance_to(grip_point) < 0.18
 
 func begin_rack(p: Vector3) -> void:
 	if _tween:

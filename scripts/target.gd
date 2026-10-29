@@ -48,6 +48,7 @@ var plate_mat: StandardMaterial3D
 var spin_cs: CollisionShape3D
 var plate_cs: CollisionShape3D
 var spin := 0.0
+var angular_velocity := 0.0
 var phase := 0.0
 var rot_t := 0.0
 var tumble := 0.0
@@ -100,7 +101,8 @@ func _physics_process(delta: float) -> void:
 	if not active:
 		return
 	if kind == Kind.SPINNER:
-		spin += deg_to_rad(SPIN_SPEED_DEG) * delta
+		angular_velocity *= 0.98  # air resistance/friction
+		spin += deg_to_rad(angular_velocity) * delta
 		pivot.rotation.z = spin
 		spin_cs.rotation.z = spin
 	match motion:
@@ -268,6 +270,13 @@ func register_hit(wp: Vector3, scoring: bool) -> String:
 				if kind == Kind.PLATE and not floating:
 					_tw.tween_property(pivot, "rotation_degrees:x", -25.0, 0.08)
 					_tw.tween_property(pivot, "rotation_degrees:x", 0.0, 0.5).set_trans(Tween.TRANS_ELASTIC)
+		# Physics-based spin for spinner targets - apply angular velocity on impact
+		if kind == Kind.SPINNER:
+			var lp := to_local(wp)
+			var r := maxf(abs(lp.x), abs(lp.y))
+			if r > 0.01: angular_velocity += r * 360.0
+			if angular_velocity > 1800: angular_velocity = 1800
+			if angular_velocity < -360: angular_velocity = -360
 		return "S"
 	var z := zone_of(wp)
 	_add_hole(wp)

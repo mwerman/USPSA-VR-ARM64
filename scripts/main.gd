@@ -71,7 +71,55 @@ var pointer: MeshInstance3D
 var arc: MeshInstance3D
 var marker: MeshInstance3D
 var ui_player: AudioStreamPlayer
-var hold_xf: Transform3D
+# ------------------------------------------------------------------ projectile system (bullet trail + physics)
+var projectiles: Array = []
+
+func spawn_projectile(from: Vector3, to: Vector3, xf: Transform3D) -> void:
+	# Create physical bullet that follows trajectory
+	var bullet := RigidBody3D.new()
+	bullet.collision_layer = 32  # projectile layer
+	bullet.collision_mask = 4  # target layer (collision mask has bit 2 set)
+	var cs := CollisionShape3D.new()
+	var sh := CylinderShape3D.new()
+	sh.radius = 0.0025
+	sh.height = 0.01
+	cs.shape = sh
+	cs.position = Vector3(0, 0, -sh.height * 0.5)
+	bullet.add_child(cs)
+	Defs.box(bullet, Vector3(sh.radius + 0.001, sh.height, sh.radius + 0.001), Vector3(0, 0, -sh.height * 0.5), Color(0.8, 0.2, 0.1))
+	add_child(bullet)
+
+	var dir := (to - from).normalized()
+	bullet.position = from
+	bullet.global_transform = xf
+	bullet.linear_velocity = dir * 350.0  # ~900 m/s muzzle velocity
+
+	projectiles.append(bullet)
+	# Connect collision detection for bullet hits on targets
+	bullet.body_entered.connect(_on_bullet_hit)
+
+func _update_projectiles(delta: float) -> void:
+	for i in range(projectiles.size()):
+		var b := projectiles[i]
+		if not b.is_inside_tree() or b.is_queued_for_deletion():
+			continue
+		b.move_and_slide()
+		# Clean up bullets that fall out of world or hit nothing
+		if b.position.y < -10.0:
+			projectiles.remove_at(i)
+			b.queue_free()
+			i -= 1
+		elif not b.is_collision():
+			projectiles.remove_at(i)
+			b.queue_free()
+			i -= 1
+
+func _on_bullet_hit(body: Node3D) -> void:
+	for i in range(projectiles.size()):
+		if projectiles[i] == body:
+			projectiles.remove_at(i)
+			body.queue_free()
+			returnvar hold_xf: Transform3D
 var tele_aiming := false
 var tele_valid := false
 var tele_target := Vector3.ZERO
@@ -320,6 +368,16 @@ func _attach_gun() -> void:
 		gun.position = Vector3.ZERO
 		gun.rotation_degrees = Vector3(float(S["grip_pitch"]), 0.0, 0.0)
 	_update_gun_state()
+	# Fix: update held_mag position when gun is holstered or drawn
+	if held_mag != null:
+		var pos := Vector3.ZERO
+		var rot := Vector3.ZERO
+		if holstered:
+			pos = holster.global_position + hold_xf.origin * 0.5
+		else:
+			pos = gun_hand.global_position + hold_xf.origin * 0.5
+		held_mag.position = pos
+		held_mag.rotation = rot
 
 func _holster_toggle() -> void:
 	if menu_open or edit_mode:
@@ -1158,6 +1216,19 @@ func _update_body() -> void:
 	if S["holster"] == "Appendix":
 		hp = cam.global_position + Vector3(0.0, -(float(BELTS[int(S["belt"])]) - 0.04), 0.0) + right * dom_side * 0.07 + body_fwd * 0.16
 	holster.global_transform = Transform3D(Basis.looking_at(body_fwd, Vector3.UP), hp)
+
+func _process(delta: float) -> void:
+	# Update projectiles (bullets)
+	_update_projectiles(delta)
+
+func _physics_process(delta: float) -> void:
+	# Two-handed recoil control - improved stability
+	if two_handed and off_hand != null and gun != null:
+		var grip := minf(off_hand_grip, 1.0)
+		if two_hand_timer > 0.5:
+			var stability := 0.6 + grip * 0.4
+			gun.kick.rotation.x *= max(0.985, 1.0 - delta * stability)
+			gun.kick.position.z *= max(0.985, 1.0 - delta * stability)
 
 func _hand_logic() -> void:
 	if held_mag != null:
