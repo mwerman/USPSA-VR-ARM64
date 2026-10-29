@@ -1,7 +1,8 @@
 class_name Target
-extends StaticBody3D
+extends RigidBody3D
 ## USPSA paper targets (scored zones) and steel (popper, plate, spinner). Targets can slide, turn,
 ## tumble or orbit in space. Floating (tumble / orbit) targets have no stand.
+## Note: Steel targets use physics for realistic bullet impact reactions
 
 enum Kind { CLASSIC, MINI, NOSHOOT, POPPER, PLATE, SPINNER }
 enum Motion { NONE, SLIDE, ROTATE, TUMBLE, ORBIT, POPUP }
@@ -65,13 +66,21 @@ func set_home(p: Vector3) -> void:
 	yaw0 = rotation.y
 
 func grab() -> void:
+	# Make kinematic when grabbed (no physics)
+	rigid_body_mode = RigidBodyProcessMode.KINEMATIC_BODY
 	collision_layer = 0
 	active = false
+	velocity = Vector3.ZERO
+	angular_velocity = Vector3.ZERO
 
 func release() -> void:
 	set_home(position)
 	if not (kind == Kind.POPPER and knocked):
+		# Make dynamic again with physics for steel targets, kinematic for paper
+		rigid_body_mode = RigidBodyProcessMode.DISABLED if kind < Kind.POPPER else RigidBodyProcessMode.INHERIT
 		collision_layer = 4
+		if kind >= Kind.POPPER:  # Steel targets are dynamic
+			self.collision_mask = 32
 	active = true
 
 func is_steel() -> bool:
@@ -82,19 +91,40 @@ func setup(k: int, m: int = 0) -> void:
 	motion = m
 	floating = (m == Motion.TUMBLE or m == Motion.ORBIT)
 	lift = -0.38 if floating else LIFT
-	collision_layer = 4
-	collision_mask = 0
 	holes = Node3D.new()
 	add_child(holes)
 	match kind:
 		Kind.CLASSIC, Kind.MINI, Kind.NOSHOOT:
 			_build_paper()
+			# Paper targets: kinematic, no physics body needed
+			self.collision_layer = 4
+			self.collision_mask = 0
+			self.freeze_penetration = true  # Prevent physics interference
 		Kind.POPPER:
 			_build_popper()
+			# Steel popper: light steel target that kicks back
+			self.collision_layer = 4
+			self.collision_mask = 32  # Detect projectiles
+			mass = 0.5  # kg
+			self.friction = 0.5
+			self.linear_damp = 2.0
 		Kind.PLATE:
 			_build_plate()
+			# Steel plate: medium steel target with moderate kickback
+			self.collision_layer = 4
+			self.collision_mask = 32  # Detect projectiles
+			mass = 1.5  # kg
+			self.friction = 0.8
+			self.linear_damp = 3.0
 		Kind.SPINNER:
 			_build_spinner()
+			# Steel spinner: heavy rotating target
+			self.collision_layer = 4
+			self.collision_mask = 32  # Detect projectiles
+			mass = 2.0  # kg
+			self.friction = 1.0
+			self.linear_damp = 4.0
+			self.angular_damp = 5.0
 	phase = randf() * TAU
 
 func _physics_process(delta: float) -> void:

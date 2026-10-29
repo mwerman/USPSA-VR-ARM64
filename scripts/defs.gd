@@ -211,7 +211,14 @@ static func sfx(key: String) -> AudioStream:
 			"slide": _sfx[key] = synth(0.09, 0.0, 0.9, 35.0, 0.6)
 			"thud": _sfx[key] = synth(0.06, 150.0, 0.5, 60.0, 0.5)
 			"menu": _sfx[key] = synth(0.03, 1200.0, 0.0, 80.0, 0.3)
-			"haha": _sfx[key] = synth(0.08, 600.0, 0.4, 200.0, 0.7)  # Comedic laugh
+			"haha": 
+				var path = "res://assets/sounds/laugh.wav"
+				if FileAccess.file_exists(path):
+					_sfx[key] = AudioStreamWAV.new()
+					_sfx[key].data = AudioLoader.load_stream(path) as PackedByteArray
+				else:
+					_sfx[key] = synth(0.08, 600.0, 0.4, 200.0, 0.7)
+				return _sfx[key]
 			_: _sfx[key] = synth(0.03, 0.0, 1.0, 100.0, 0.3)
 	return _sfx[key]
 

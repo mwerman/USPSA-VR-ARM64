@@ -168,6 +168,8 @@ var edit_height := 1.5
 var edit_tex := 0
 var projectile_thread: Thread = null
 var active_projectiles: Array = []
+var held_mag: Mag = null  # Magazine being carried, attached to off-hand
+var mag_pouches: Array = []  # Pouch locations for mags
 
 # ------------------------------------------------------------------ setup
 
@@ -192,6 +194,7 @@ func _ready() -> void:
 	gun.build(S["gun"], S["optic"], S["muzzle"])
 	gun.shot.connect(_on_shot)
 	gun.sfx.connect(play)
+	gun.headshot_detected.connect(_handle_headshot)
 	_apply_hands()
 	_apply_quality()
 	_apply_foveation()
@@ -1022,34 +1025,6 @@ func _grip_up() -> void:
 		held_mag = null
 
 func _on_shot(xf: Transform3D) -> void:
-	# Easter egg: detect headshot - check if we're aiming at own head
-	var is_headshot := false
-	var head_hit_pos := Vector3.ZERO
-	if head_hitbox != null and head_hitbox.is_inside_world():
-		var head_pos := head_hitbox.global_position
-		var dir := -xf.basis.z
-		var dist := (head_pos - xf.origin).length()
-		# If aiming roughly at head position within reasonable distance
-		if absf(dir.dot(head_pos - xf.origin)) > 0.8 * dist and dist < 10.0:
-			is_headshot = true
-			head_hit_pos = head_pos
-	# Trigger headshot easter egg effects
-	if is_headshot:
-		# Funny laugh sound
-		var laugh := AudioStreamPlayer3D.new()
-		laugh.position = Vector3(0, 0.2, -1.5)
-		laugh.stream = Defs.sfx("haha")
-		laugh.global_position = head_hit_pos
-		add_child(laugh)
-		laugh.finished.connect(laugh.queue_free)
-		laugh.play()
-		# Camera shake/spin for comedic effect
-		_headshake()
-		# Play a silly haptic feedback if possible
-		if gun_hand != null:
-			head_haptic()
-		return  # Skip normal hit processing for headshot
-
 	# Create physical projectile instead of raycast
 	var from := xf.origin
 	var dir := -xf.basis.z
@@ -1069,6 +1044,28 @@ func play(key: String, pos: Vector3) -> void:
 	p.global_position = pos
 	p.finished.connect(p.queue_free)
 	p.play()
+
+func _handle_headshot() -> void:
+	# Headshot easter egg - trigger funny effects when shooting your own head
+	if head_hitbox == null or not head_hitbox.is_inside_world():
+		return
+	var head_pos := head_hitbox.global_position
+	
+	# Funny laugh sound
+	var laugh := AudioStreamPlayer3D.new()
+	laugh.position = Vector3(0, 0.2, -1.5)
+	laugh.stream = Defs.sfx("haha")
+	laugh.global_position = head_pos
+	add_child(laugh)
+	laugh.finished.connect(laugh.queue_free)
+	laugh.play()
+	
+	# Camera shake/spin for comedic effect
+	_headshake()
+	
+	# Play a silly haptic feedback if possible
+	if gun_hand != null:
+		head_haptic()
 
 # ------------------------------------------------------------------ timer + scoring
 

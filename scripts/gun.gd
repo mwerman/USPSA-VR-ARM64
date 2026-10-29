@@ -222,6 +222,12 @@ func _process(delta: float) -> void:
 	dot.visible = vis
 	if ring != null:
 		ring.visible = vis and ret_style == 1
+	# Keep mag centered on frame_node to prevent physics drift during holster/draw transitions
+	if is_instance_valid(mag) and mag.in_gun and not holstered:
+		var g: Vector3 = cfg["grip"]
+		var desired_pos := Vector3(0.0, -g.y + 0.0025 - 0.006, 0.005)
+		m.position = desired_pos
+		m.rotation = Vector3.ZERO
 
 func _physics_process(delta: float) -> void:
 	two_hand_timer += delta
