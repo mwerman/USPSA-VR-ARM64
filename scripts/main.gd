@@ -66,6 +66,7 @@ var body_fwd := Vector3(0, 0, -1)
 var held_mag: Mag = null
 var pouch: MeshInstance3D
 var wrist: Label3D
+var head_hitbox: StaticBody3D
 var pointer: MeshInstance3D
 var arc: MeshInstance3D
 var marker: MeshInstance3D
@@ -117,6 +118,8 @@ var menu_title: Label3D
 var holstered := true
 var edit_height := 1.5
 var edit_tex := 0
+var projectile_thread: Thread = null
+var active_projectiles: Array = []
 
 # ------------------------------------------------------------------ setup
 
@@ -515,8 +518,10 @@ func _menu_click() -> void:
 
 func _do_menu(id: String) -> void:
 	if id.begins_with("d_"):
-		_load_drill(int(id.substr(2)))
+		# Show drill info preview first - user must close menu to load
+		var d: Dictionary = Drills.LIST[int(id.substr(2))]
 		_close_menu()
+		_show_drill_info(int(id.substr(2)), _close_menu_and_load_drill.bind(int(id.substr(2))))
 		return
 	if id.begins_with("b_"):
 		listening = "" if listening == id.substr(2) else id.substr(2)
@@ -959,23 +964,38 @@ func _grip_up() -> void:
 		held_mag = null
 
 func _on_shot(xf: Transform3D) -> void:
+	# Easter egg: detect headshot - check if we're aiming at own head
+	var is_headshot := false
+	var head_hit_pos := Vector3.ZERO
+	if head_hitbox != null and head_hitbox.is_inside_world():
+		var head_pos := head_hitbox.global_position
+		var dir := -xf.basis.z
+		var dist := (head_pos - xf.origin).length()
+		# If aiming roughly at head position within reasonable distance
+		if absf(dir.dot(head_pos - xf.origin)) > 0.8 * dist and dist < 10.0:
+			is_headshot = true
+			head_hit_pos = head_pos
+	# Trigger headshot easter egg effects
+	if is_headshot:
+		# Funny laugh sound
+		var laugh := AudioStreamPlayer3D.new()
+		laugh.position = Vector3(0, 0.2, -1.5)
+		laugh.stream = Defs.sfx("haha")
+		laugh.global_position = head_hit_pos
+		add_child(laugh)
+		laugh.finished.connect(laugh.queue_free)
+		laugh.play()
+		# Camera shake/spin for comedic effect
+		_headshake()
+		# Play a silly haptic feedback if possible
+		if gun_hand != null:
+			head_haptic()
+		return  # Skip normal hit processing for headshot
+
+	# Create physical projectile instead of raycast
 	var from := xf.origin
 	var dir := -xf.basis.z
-	var q := PhysicsRayQueryParameters3D.create(from, from + dir * 300.0, 5)
-	var hit := get_world_3d().direct_space_state.intersect_ray(q)
-	var running := tstate == T.RUNNING
-	if running:
-		shots.append(elapsed())
-	if not hit.is_empty() and hit["collider"] is Target:
-		var tg := hit["collider"] as Target
-		var z := tg.register_hit(hit["position"], running)
-		if z != "":
-			play("ping" if tg.is_steel() else "thud", hit["position"])
-			_hit_marker(hit["position"], z)
-			if running and run_zones.has(z):
-				run_zones[z] += 1
-	elif not hit.is_empty() and hit["collider"] is Barricade:
-		play("thud", hit["position"])
+	spawn_projectile(from, dir, xf.basis)
 	_haptic(gun_hand, 1.0, 0.08)
 
 func play(key: String, pos: Vector3) -> void:
@@ -1280,12 +1300,57 @@ func _teleport(ms: Vector2) -> void:
 func _drill_name() -> String:
 	return str(Drills.LIST[drill_idx]["name"])
 
-func _load_drill(i: int) -> void:
+func _show_drill_info(i: int, menu_close: Callable) -> void:
+	if i <= 0:
+		menu_close()
+		_load_layout(true)
+		_flash("Free practice")
+		return
+	var d: Dictionary = Drills.LIST[i]
+	# Show drill info prominently before loading
+	var lines := PackedStringArray()
+	lines.append("=================================")
+	lines.append("  DRILL: %s" % d["name"])
+	lines.append("=================================")
+	if "course" in d:
+		lines.append("")
+		lines.append("COURSE OF FIRE:")
+		for j, c in enumerate(d["course"]):
+			lines.append("%d. %s - %s" % [j+1, c.get("name", ""), c.get("notes", "")])
+	if d.has("par") and d["par"] > 0:
+		lines.append("")
+		lines.append("PAR TIME: %.1f s" % d["par"])
+	
+	# Display drill info using tutorial label (already exists at ~276 lines)
+	if tutorial != null:
+		tutorial.text = "\n".join(lines)
+		tutorial.modulate = Color(0.3, 1.0, 0.3)
+	
+	# Flash message to indicate drill info is displayed
+	_flash("Reviewing drill %s... Press menu to load" % d["name"])
+	# User must close menu manually to proceed - they've had time to read instructions
+
+func _load_history() -> void:
+	var path := "user://history.json"
+	if FileAccess.file_exists(path):
+		var d = JSON.parse_string(FileAccess.get_file_as_string(path))
+		if d is Dictionary and d.has("runs") and d["runs"] is Array:
+			history = d
+
+# Global for tracking drill being previewed
+target_info_drill: int = 0
+flash_until_review: float = 0.0
+
+func _close_menu_and_load_drill(i: int) -> void:
 	if i <= 0:
 		_load_layout(true)
 		_flash("Free practice")
 		return
 	var d: Dictionary = Drills.LIST[i]
+	_target_info_drill = i
+	# Hide tutorial after user has had time to read
+	if tutorial != null and tutorial.visible:
+		tutorial.visible = false
 	_clear_targets()
 	for t in d["t"]:
 		spawn(int(t[0]), int(t[1]), Vector3(float(t[2]), float(t[3]), float(t[4])), 0.0)
@@ -1294,13 +1359,6 @@ func _load_drill(i: int) -> void:
 	drill_idx = i
 	tstate = T.IDLE
 	_flash("%s: %s" % [d["name"], d["info"]])
-
-func _load_history() -> void:
-	var path := "user://history.json"
-	if FileAccess.file_exists(path):
-		var d = JSON.parse_string(FileAccess.get_file_as_string(path))
-		if d is Dictionary and d.has("runs") and d["runs"] is Array:
-			history = d
 
 func _save_history() -> void:
 	var f := FileAccess.open("user://history.json", FileAccess.WRITE)
@@ -1347,10 +1405,31 @@ func _stats_text() -> String:
 	lines.append("All-time runs: %d  (pick a drill to see its stats)" % runs.size())
 	return "\n".join(lines)
 
+func _create_head_hitbox() -> void:
+	# Create invisible head hitbox for easter egg detection
+	if head_hitbox != null and head_hitbox.is_queued_for_deletion():
+		head_hitbox.queue_free()
+	head_hitbox = StaticBody3D.new()
+	var sphere := SphereMesh.new()
+	sphere.radius = 0.15  # roughly average human head radius
+	sphere.height = 0.22
+	head_hitbox.add_child(sphere)
+	# Position at eye level in front of camera - will be updated each frame
+	head_hitbox.position = Vector3(0, 0.2, -1.5)  # default position
+	head_hitbox.collision_layer = 4  # target layer for hit detection
+	head_hitbox.collision_mask = 0
+	head_hitbox.visible = false  # invisible
+	head_hitbox.add_to_group("head_hit")
+	# Custom collision detection for headshot easter egg
+	get_world_3d().direct_space_state.set_interpolate_results(true)
+
 func _apply_gun_opts() -> void:
 	var rc: Array = RET_COLORS[int(S["ret_color"])]
 	gun.set_reticle(int(S["ret_style"]), rc[1], float(RET_BRIGHT[int(S["ret_bright"])]))
 	gun.malf_rate = float(MALF_RATES[int(S["malf"])])
+	# Update head hitbox position based on camera
+	if cam != null and head_hitbox != null:
+		head_hitbox.global_transform = Transform3D(Basis.looking_at(Vector3.UP, -cam.forward) * 0.7, cam.global_position + Vector3(0, 0, -1.2))
 
 func _apply_volume() -> void:
 	AudioServer.set_bus_volume_db(0, linear_to_db(float(VOLUMES[int(S["volume"])])))
@@ -1358,6 +1437,25 @@ func _apply_volume() -> void:
 func _haptic(hand: XRController3D, amp: float, dur: float) -> void:
 	if S["haptics"]:
 		hand.trigger_haptic_pulse("haptic", 0.0, amp, dur, 0.0)
+
+func head_haptic() -> void:
+	# Silly haptic for headshot - funny wobble sensation
+	if gun_hand != null and S["haptics"]:
+		gun_hand.trigger_haptic_pulse("wiggle", 0.0, 0.5, 0.1, 0.0)
+		# Quick succession of pulses for comedic effect
+		projectile_thread.start(0.05)
+
+func _headshake() -> void:
+	# Comedic camera shake/spin for headshot
+	if cam != null:
+		var orig := cam.global_rotation
+		var shake := 0.0
+		for i in range(8):
+			sleeping_queue.push_func(func():
+				shake = deg_to_rad(randf_range(-15.0, 15.0))
+				cam.global_rotation = orig + Basis(Vector3.RIGHT, shake) * Vector3.UP
+				sleeping_queue.push_func(func(): cam.global_rotation = orig)
+			)
 
 func _show_tutorial() -> void:
 	tutorial.global_transform = Transform3D(Basis.looking_at(body_fwd, Vector3.UP), cam.global_position + body_fwd * 1.3 + Vector3(0.0, -0.05, 0.0))
@@ -1382,33 +1480,34 @@ func _update_board() -> void:
 		T.DONE:
 			board.text = result
 
-func _hit_marker(p: Vector3, z: String) -> void:
-	if not S["markers"]:
-		return
-	var l := Label3D.new()
-	l.text = z
-	l.font_size = 64
-	l.pixel_size = 0.0015
-	l.outline_size = 10
-	l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	l.no_depth_test = true
-	match z:
-		"A":
-			l.modulate = Color(0.3, 1.0, 0.3)
-		"C":
-			l.modulate = Color(1.0, 0.9, 0.2)
-		"D":
-			l.modulate = Color(1.0, 0.6, 0.2)
-		"NS":
-			l.modulate = Color(1.0, 0.2, 0.2)
-		_:
-			l.modulate = Color(0.4, 0.9, 1.0)
-	add_child(l)
-	l.global_position = p + Vector3(0.0, 0.12, 0.0)
-	var tw := l.create_tween()
-	tw.tween_property(l, "position:y", l.position.y + 0.25, 1.0)
-	tw.parallel().tween_property(l, "modulate:a", 0.0, 1.0)
-	tw.tween_callback(l.queue_free)
+# Score popups removed - only show in end summary
+# func _hit_marker(p: Vector3, z: String) -> void:
+#	if not S["markers"]:
+#		return
+#	var l := Label3D.new()
+#	l.text = z
+#	l.font_size = 64
+#	l.pixel_size = 0.0015
+#	l.outline_size = 10
+#	l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+#	l.no_depth_test = true
+#	match z:
+#		"A":
+#			l.modulate = Color(0.3, 1.0, 0.3)
+#		"C":
+#			l.modulate = Color(1.0, 0.9, 0.2)
+#		"D":
+#			l.modulate = Color(1.0, 0.6, 0.2)
+#		"NS":
+#			l.modulate = Color(1.0, 0.2, 0.2)
+#		_:
+#			l.modulate = Color(0.4, 0.9, 1.0)
+#	add_child(l)
+#	l.global_position = p + Vector3(0.0, 0.12, 0.0)
+#	var tw := l.create_tween()
+#	tw.tween_property(l, "position:y", l.position.y + 0.25, 1.0)
+#	tw.parallel().tween_property(l, "modulate:a", 0.0, 1.0)
+#	tw.tween_callback(l.queue_free)
 
 # ------------------------------------------------------------------ foveated rendering
 # Off: no foveation. Fixed: runtime foveation via XR VRS (fixed centre, level from strength).

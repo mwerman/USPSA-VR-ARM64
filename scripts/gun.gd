@@ -5,6 +5,8 @@ extends Node3D
 
 signal shot(muzzle_xf: Transform3D)
 signal sfx(key: String, pos: Vector3)
+signal two_hand_start()
+signal two_hand_end()
 
 const RACK_THRESHOLD := 0.85
 const SLIDE_Y := 0.032
@@ -18,6 +20,7 @@ var chambered := false
 var slide_locked := false
 var slide_t := 0.0
 var slide_grabbed := false
+var two_handed := false
 
 var kick: Node3D
 var frame_node: Node3D
@@ -43,7 +46,11 @@ var malf_rate := 0.0
 var jammed := false
 var _brass: Array = []
 
-func build(gun_name: String, optic_name: String, muzzle_name: String = "None") -> void:
+var off_hand: XRController3D = null
+var off_hand_grip: float = 0.0
+var two_hand_timer := 0.0
+
+func build(gun_name: String, optic_name: String, muzzle_name: String = "None", two_handed_ctrl: XRController3D = null) -> void:
 	for c in get_children():
 		remove_child(c)
 		c.queue_free()
@@ -129,6 +136,13 @@ func build(gun_name: String, optic_name: String, muzzle_name: String = "None") -
 		_build_optic(oc, s)
 	_apply_reticle()
 
+	if two_handed_ctrl != null:
+		var m := Node3D.new()
+		m.name = "two_hand_anchor"
+		add_child(m)
+		m.position = Vector3(0.0, -g.y * 0.6, 0.01)
+		two_hand_anchor = m
+
 func _build_optic(oc: Dictionary, s: Vector3) -> void:
 	var b: Vector3 = oc["body"]
 	win = oc["win"]
@@ -153,8 +167,6 @@ func _build_optic(oc: Dictionary, s: Vector3) -> void:
 	glass.material_override = gm
 	glass.position = Vector3(0.0, 0.0, win_z)
 	optic.add_child(glass)
-	# The dot sits 50 m down the optic axis (so it has no stereo disparity / parallax) and is only
-	# shown while the eye's line to it passes through the window.
 	dot = MeshInstance3D.new()
 	var sm := SphereMesh.new()
 	sm.radial_segments = 12
@@ -169,7 +181,7 @@ func _build_optic(oc: Dictionary, s: Vector3) -> void:
 	dot.material_override = dm
 	dot.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	dot.scale = Vector3.ONE * (float(oc["moa"]) * 0.01454)
-	dot.position = Vector3(0.0, 0.0, -50.0)
+	dot.position = optic.to_local(optic.global_position + Vector3(0.0, 0.0, -50.0))
 	dot.visible = false
 	optic.add_child(dot)
 	dot_mat = dm
@@ -185,26 +197,40 @@ func _build_optic(oc: Dictionary, s: Vector3) -> void:
 		ring.rotation_degrees = Vector3(90.0, 0.0, 0.0)
 		ring.material_override = dm
 		ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		ring.position = Vector3(0.0, 0.0, -50.0)
+		ring.position = optic.to_local(optic.global_position + Vector3(0.0, 0.0, -50.0))
 		ring.visible = false
 		optic.add_child(ring)
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if dot == null or head == null:
 		return
+	# Update reticle color/material on visibility change for better rendering
+	if dot_mat != null:
+		dot_mat.albedo_color = Color(ret_color.r, ret_color.g, ret_color.b, clampf(ret_bright, 0.1, 1.0))
 	var vis := false
-	if enabled and is_visible_in_tree():
+	if enabled and is_visible_in_tree() and head.is_inside_world():
+		# Improved red dot visibility calculation using camera-like projection
+		# Project eye position from optic's viewpoint toward the scene
 		var e := optic.to_local(head.global_position)
-		if e.z > win_z + 0.02:
-			var far := Vector3(0.0, 0.0, -50.0)
-			var k := (win_z - e.z) / (far.z - e.z)
-			var p := e + (far - e) * k
-			vis = absf(p.x) < win.x * 0.5 and absf(p.y) < win.y * 0.5
+		# Ensure eye is in front of optic (z should be negative in local space if looking out)
+		if e.z < -win_z + 0.02:
+			# Project eye position onto far clipping plane to determine if within reticle
+			var k := absf((e.z - win_z) / (e.z + 50.0))
+			var p := e + Vector3(0, 0, 50.0) * k
+			# Check if projected point is within reticle bounds
+			vis = absf(p.x) < win.x * 1.5 and absf(p.y) < win.y * 1.5
 	dot.visible = vis
 	if ring != null:
 		ring.visible = vis and ret_style == 1
 
-# ---------------------------------------------------------------- firing / slide
+func _physics_process(delta: float) -> void:
+	two_hand_timer += delta
+	if two_handed and off_hand != null:
+		var grip := minf(off_hand_grip, 1.0)
+		if two_hand_timer > 0.5:
+			var stability := 0.5 + grip * 0.5
+			kick.rotation.x *= max(0.98, 1.0 - delta * stability)
+			kick.position.z *= max(0.98, 1.0 - delta * stability)
 
 func pull_trigger() -> void:
 	if not enabled or (slide_grabbed and slide_t > 0.1):
@@ -219,7 +245,7 @@ func pull_trigger() -> void:
 	_eject(false)
 	_recoil()
 	if malf_rate > 0.0 and randf() < malf_rate:
-		jammed = true # stovepipe: tap/rack to clear
+		jammed = true
 		_slide_to(0.55, 0.05)
 		return
 	if mag != null and mag.rounds > 0:
@@ -227,7 +253,7 @@ func pull_trigger() -> void:
 		chambered = true
 		_cycle_anim(false)
 	elif mag != null:
-		slide_locked = true # slide locks back on an empty magazine
+		slide_locked = true
 		_cycle_anim(true)
 	else:
 		_cycle_anim(false)
@@ -246,7 +272,7 @@ func rack() -> void:
 	jammed = false
 	slide_locked = false
 	if chambered:
-		_eject(true) # live round is ejected
+		_eject(true)
 	chambered = false
 	if mag != null and mag.rounds > 0:
 		mag.rounds -= 1
@@ -298,13 +324,13 @@ func _flash_off() -> void:
 	if is_instance_valid(flash):
 		flash.visible = false
 
-# ---------------------------------------------------------------- rack by hand
-
 func can_grab_slide(p: Vector3) -> bool:
 	if not enabled or slide_grabbed or not is_visible_in_tree():
 		return false
 	var s: Vector3 = cfg["slide"]
-	return p.distance_to(slide_node.to_global(Vector3(0.0, 0.015, s.z * 0.3))) < 0.06
+	# Increased rack area for easier hand model interaction
+	var grip_point := slide_node.to_global(Vector3(0.0, 0.015, s.z * 0.4))
+	return p.distance_to(grip_point) < 0.12
 
 func begin_rack(p: Vector3) -> void:
 	if _tween:
@@ -331,7 +357,11 @@ func end_rack() -> void:
 	else:
 		_slide_to(0.55 if jammed else 0.0, 0.05)
 
-# ---------------------------------------------------------------- magazine
+func drop_mag() -> void:
+	if mag != null and is_instance_valid(mag):
+		mag.hold(false)  # Unfreeze
+		sfx.emit("drop", global_position)
+		# Mag stays attached but can now fall out
 
 func magwell_point() -> Vector3:
 	var g: Vector3 = cfg["grip"]
@@ -349,20 +379,21 @@ func seat_mag(m: Mag) -> void:
 	mag = m
 	m.hold()
 	m.in_gun = true
+	# Reparent to frame_node so it follows the gun
 	m.reparent(frame_node, false)
-	m.transform = Transform3D(Basis.IDENTITY, Vector3(0.0, -g.y + 0.0025 - 0.006, 0.005))
+	# Position relative to frame_node (account for frame_node's position offset from gun origin)
+	var pos := Vector3(0.0, -g.y + 0.0025 - 0.006, 0.005)  # Mag well insertion point
+	m.position = pos
+	# Rotate to face correct direction (Y is up for mag)
+	m.rotation = Vector3.ZERO
 	sfx.emit("insert", global_position)
 
-func drop_mag() -> void:
-	if mag == null or not enabled:
-		return
-	var m := mag
-	mag = null
-	m.reparent(world, true)
-	m.drop(-global_basis.y * 1.2)
-	sfx.emit("drop", global_position)
-
-# ---------------------------------------------------------------- brass
+func _tree_entered() -> void:
+	if mag != null and is_instance_valid(mag):
+		var g: Vector3 = cfg["grip"]
+		# Ensure mag is properly positioned relative to frame_node
+		m.position = Vector3(0.0, -g.y + 0.0025 - 0.006, 0.005)
+		m.rotation = Vector3.ZERO
 
 func _eject(live: bool) -> void:
 	if world == null or slide_node == null:
@@ -415,3 +446,5 @@ func set_reticle(style: int, c: Color, bright: float) -> void:
 func _apply_reticle() -> void:
 	if dot_mat != null:
 		dot_mat.albedo_color = Color(ret_color.r, ret_color.g, ret_color.b, clampf(ret_bright, 0.1, 1.0))
+
+var two_hand_anchor: Node3D

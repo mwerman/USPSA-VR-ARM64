@@ -73,8 +73,9 @@ static func box(parent: Node, size: Vector3, pos: Vector3, c: Color, collide := 
 		mi.add_child(sb)
 	return mi
 
+# Realistic sound synthesis with improved quality
 static func synth(dur: float, freq: float, noise: float, decay: float, vol: float) -> AudioStreamWAV:
-	var rate := 22050
+	var rate := 44100
 	var n := int(dur * rate)
 	var data := PackedByteArray()
 	data.resize(n * 2)
@@ -94,26 +95,128 @@ static func synth(dur: float, freq: float, noise: float, decay: float, vol: floa
 	w.data = data
 	return w
 
-static func sfx(key: String) -> AudioStreamWAV:
+static func _create_shot_sound(muzzle_type: String) -> AudioStream:
+	if Defs._sfx.has("shot_" + muzzle_type):
+		return Defs._sfx["shot_" + muzzle_type]
+	
+	var rate := 44100
+	var n := int(0.35 * rate)
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	
+	for i in n:
+		var t := float(i) / rate
+		var env := exp(-t * 15.0)
+		var s := 0.0
+		
+		if muzzle_type == "shot_supp":
+			# Suppressor - quiet, sharp crack
+			s += sin(TAU * 180.0 * t) * 0.8 * env
+			s += randf_range(-1.0, 1.0) * 0.3 * noise(0.4, 16.0 * t) * env
+		elif muzzle_type == "shot":
+			# Compensator/Muzzle brake - loud bang with report and crack
+			s += sin(TAU * 95.0 * t + 2.0) * 0.9 * env
+			s += randf_range(-1.0, 1.0) * 1.5 * noise(0.8, 24.0 * t) * env
+		else:
+			# No muzzle - standard shot
+			s += sin(TAU * 85.0 * t) * 1.0 * env
+			s += randf_range(-1.0, 1.0) * 1.2 * noise(0.7, 20.0 * t) * env
+		
+		var v := clampi(int(s * env * 30000.0), -32768, 32767)
+		data.encode_s16(i * 2, v)
+	
+	var w := AudioStreamWAV.new()
+	w.format = AudioStreamWAV.FORMAT_16_BITS
+	w.mix_rate = rate
+	w.stereo = false
+	w.data = data
+	
+	if not Defs._sfx.has("shot_" + muzzle_type):
+		Defs._sfx["shot_" + muzzle_type] = w
+	return w
+
+static func _create_steel_impact_sound() -> AudioStream:
+	if Defs._sfx.has("steel"):
+		return Defs._sfx["steel"]
+	
+	var rate := 44100
+	var n := int(0.5 * rate)
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	
+	for i in n:
+		var t := float(i) / rate
+		var env := exp(-t * 20.0)
+		var s := 0.0
+		
+		# Metallic ping with decay and some harmonic content
+		s += sin(TAU * 1300.0 * t) * 1.0 * env
+		s += sin(TAU * 2600.0 * t) * 0.3 * env
+		s += randf_range(-1.0, 1.0) * 0.4 * noise(0.15, 8.0 * t) * env
+		
+		var v := clampi(int(s * env * 35000.0), -32768, 32767)
+		data.encode_s16(i * 2, v)
+	
+	var w := AudioStreamWAV.new()
+	w.format = AudioStreamWAV.FORMAT_16_BITS
+	w.mix_rate = rate
+	w.stereo = false
+	w.data = data
+	
+	if not Defs._sfx.has("steel"):
+		Defs._sfx["steel"] = w
+	return w
+
+static func sfx(key: String) -> AudioStream:
 	if not _sfx.has(key):
+		# Try to load actual sound files for realistic audio
 		match key:
-			"shot": _sfx[key] = synth(0.30, 80.0, 0.8, 16.0, 0.95)
+			"shot": 
+				var path = "res://assets/sounds/shot_9mm.wav"
+				if FileAccess.file_exists(path):
+					_sfx[key] = AudioStreamWAV.new() 
+					_sfx[key].data = AudioLoader.load_stream(path) as PackedByteArray
+				else:
+					_sfx[key] = _create_shot_sound("shot")
+				return _sfx[key]
+			"brass": 
+				var path = "res://assets/sounds/brass_ejection.wav"
+				if FileAccess.file_exists(path):
+					_sfx[key] = AudioStreamWAV.new() 
+					_sfx[key].data = AudioLoader.load_stream(path) as PackedByteArray
+				else:
+					_sfx[key] = synth(0.15, 4200.0, 0.2, 30.0, 0.25)
+				return _sfx[key]
+			"ping": 
+				var path = "res://assets/sounds/steel_impact.wav"
+				if FileAccess.file_exists(path):
+					_sfx[key] = AudioStreamWAV.new() 
+					_sfx[key].data = AudioLoader.load_stream(path) as PackedByteArray
+				else:
+					_sfx[key] = _create_steel_impact_sound()
+				return _sfx[key]
+			"shot_supp": 
+				var path = "res://assets/sounds/shot_supp.wav"
+				if FileAccess.file_exists(path):
+					_sfx[key] = AudioStreamWAV.new() 
+					_sfx[key].data = AudioLoader.load_stream(path) as PackedByteArray
+				else:
+					_sfx[key] = _create_shot_sound("shot_supp")
+				return _sfx[key]
 			"click": _sfx[key] = synth(0.03, 0.0, 1.0, 100.0, 0.5)
 			"beep": _sfx[key] = synth(0.35, 2000.0, 0.0, 0.0, 0.6)
 			"standby": _sfx[key] = synth(0.08, 900.0, 0.0, 0.0, 0.4)
 			"drop": _sfx[key] = synth(0.08, 200.0, 0.6, 40.0, 0.6)
 			"insert": _sfx[key] = synth(0.06, 0.0, 1.0, 60.0, 0.6)
 			"slide": _sfx[key] = synth(0.09, 0.0, 0.9, 35.0, 0.6)
-			"ping": _sfx[key] = synth(0.45, 1400.0, 0.05, 9.0, 0.7)
 			"thud": _sfx[key] = synth(0.06, 150.0, 0.5, 60.0, 0.5)
 			"menu": _sfx[key] = synth(0.03, 1200.0, 0.0, 80.0, 0.3)
-			"shot_supp": _sfx[key] = synth(0.20, 300.0, 0.7, 30.0, 0.35)
-			"brass": _sfx[key] = synth(0.15, 4200.0, 0.2, 30.0, 0.25)
+			"haha": _sfx[key] = synth(0.08, 600.0, 0.4, 200.0, 0.7)  # Comedic laugh
 			_: _sfx[key] = synth(0.03, 0.0, 1.0, 100.0, 0.3)
 	return _sfx[key]
 
 static func warm() -> void:
-	for k in ["shot", "click", "beep", "standby", "drop", "insert", "slide", "ping", "thud", "menu", "shot_supp", "brass"]:
+	for k in ["shot", "click", "beep", "standby", "drop", "insert", "slide", "ping", "thud", "menu", "shot_supp", "brass", "haha"]:
 		sfx(k)
 
 static func _shade(c: Color, k: float) -> Color:
@@ -179,3 +282,40 @@ static func _make_tex(tname: String) -> ImageTexture:
 			img.set_pixel(x, y, c)
 	img.generate_mipmaps()
 	return ImageTexture.create_from_image(img)
+
+static func noise(noise_level: float, freq: float) -> float:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(Vector3(freq, Time.get_ticks_usec()))
+	return rng.randf_range(-noise_level, noise_level)
+
+# Asset paths for realistic models and sounds (to be populated with actual files)
+static var ASSETS := {
+	"guns": {
+		"Glock 17": "res://assets/models/gun_glock_17.glb",
+		"CZ Shadow 2": "res://assets/models/gun_cz_shadow_2.glb",
+		"S&W M&P9 2.0": "res://assets/models/gun_sw_m9.glb",
+		"1911 .45": "res://assets/models/gun_1911.glb",
+	},
+	"muzzles": {
+		"None": "",
+		"Compensator": "res://assets/models/muzzle_compensator.glb",
+		"Muzzle Brake": "res://assets/models/muzzle_brake.glb",
+		"Suppressor": "res://assets/models/muzzle_suppressor.glb",
+	},
+	"optics": {
+		"Iron Sights": "",
+		"Holosun 507C": "res://assets/models/optic_holosun_507c.glb",
+		"Trijicon RMR": "res://assets/models/optic_trijicon_rmr.glb",
+		"Shield RMSc": "res://assets/models/optic_shield_rmsc.glb",
+		"Aimpoint ACRO P-2": "res://assets/models/optic_aimpoint_acro.glb",
+	},
+	"sounds": {
+		"shot_glock": "res://assets/sounds/gun_shot_glock.wav",
+		"shot_cz": "res://assets/sounds/gun_shot_cz.wav",
+		"shot_sw9": "res://assets/sounds/gun_shot_sw9.wav",
+		"shot_1911": "res://assets/sounds/gun_shot_1911.wav",
+		"shot_supp": "res://assets/sounds/gun_shot_suppressor.wav",
+		"brass_eject": "res://assets/sounds/brass_ejection.wav",
+		"steel_impact": "res://assets/sounds/steel_impact.wav",
+	},
+}
